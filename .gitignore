@@ -3,9 +3,16 @@ __pycache__/
 *.db
 data/
 .env
+.env.local
+.env.*.local
 *.egg-info/
 dist/
 .venv/
 venv/
 .idea/
 .vscode/
+*.pem
+*.key
+credentials*.json
+firebase*.json
+.service_account.json
