@@ -14,12 +14,18 @@ services:
         generateValue: true
       - key: API_KEY
         generateValue: true
+      - key: WEBHOOK_SECRET
+        generateValue: true
       - key: APP_ENV
         value: production
       - key: MERCHANT_PHONE
         sync: false
       - key: MERCHANT_NAME
         sync: false
+      - key: WEBHOOK_RATE_LIMIT
+        value: 30 per minute
+      - key: GLOBAL_RATE_LIMIT
+        value: 60 per minute
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID

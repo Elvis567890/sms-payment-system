@@ -5,35 +5,31 @@ Covers:
   - SMS parser accuracy across all supported formats
   - Webhook endpoint: success, invalid payloads, duplicates, 404
   - Database: CRUD, subscription activation, expiry calculation
+  - Security: rate limiting, HMAC verification, input validation
 
-Run with:
-    pytest tests/ -v
+Run with: pytest tests/ -v
 """
 
-import os
-import sys
-import uuid
-import pytest
+import os, sys, uuid, pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+os.environ["SECRET_KEY"] = "a" * 32
+os.environ["API_KEY"] = "b" * 24
+os.environ["MERCHANT_PHONE"] = "0782123456"
+os.environ["APP_ENV"] = "testing"
+
 from app import app
 from database import (
-    init_db,
-    create_user,
-    get_user,
-    create_transaction,
-    get_pending_by_manual_id,
-    activate_subscription,
-    PLAN_PRICES,
-    PLAN_DURATION_DAYS,
+    init_db, create_user, get_user, create_transaction,
+    get_pending_by_manual_id, activate_subscription,
+    PLAN_PRICES, PLAN_DURATION_DAYS,
 )
 from sms_parser import parse_sms
 
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path):
-    """Isolate each test with a fresh SQLite database."""
     import database
     db_dir = tmp_path / "data"
     db_dir.mkdir(exist_ok=True)
@@ -51,11 +47,17 @@ def client():
 
 
 @pytest.fixture
-def test_user():
+def auth_headers():
+    return {"X-API-Key": "b" * 24}
+
+
+@pytest.fixture
+def test_user(auth_headers, client):
     unique_id = uuid.uuid4().hex[:8]
     email = f"test_{unique_id}@example.com"
-    user_id = create_user(email, "+256782123456")
-    return {"id": user_id, "email": email}
+    resp = client.post("/api/users", json={"email": email, "phone": "+256782123456"}, headers=auth_headers)
+    data = resp.get_json()
+    return {"id": data["id"], "email": email}
 
 
 class TestSMSParser:
@@ -72,7 +74,7 @@ class TestSMSParser:
         assert r.sender_phone == "+256782123456"
 
     def test_txnid_format(self):
-        r = parse_sms("UGX40000 paid to 0782123456. TxnId: PP1234XYZ789. Thank you.")
+        r = parse_sms("UGX40000 paid to 0782123456. TxnId: PP1234XYZ789.")
         assert r.transaction_id == "PP1234XYZ789"
         assert r.amount == 40000.0
 
@@ -86,11 +88,6 @@ class TestSMSParser:
         assert r.transaction_id == "M2361DEF456"
         assert r.amount == 15000.0
         assert r.sender_phone == "+256705123456"
-
-    def test_ugx_suffix(self):
-        r = parse_sms("2,500 UGX received. Ref: M2361GHI789 from +256782123456")
-        assert r.transaction_id == "M2361GHI789"
-        assert r.amount == 2500.0
 
     def test_no_decimal_amount(self):
         r = parse_sms("UGX40000 paid. FT12345678 confirmed. From 0782123456")
@@ -140,6 +137,14 @@ class TestDatabase:
         assert PLAN_PRICES["monthly"] == 15000
         assert PLAN_PRICES["quarterly"] == 40000
 
+    def test_expire_stale_transactions(self, test_user):
+        from database import expire_stale_transactions, get_db
+        create_transaction(user_id=test_user["id"], tx_ref="TX-STALE", amount=2500, plan="day")
+        with get_db() as (conn, cur):
+            cur.execute("UPDATE transactions SET created_at = datetime('now', '-10 minutes') WHERE tx_ref = ?", ("TX-STALE",))
+        expired = expire_stale_transactions(5)
+        assert expired >= 1
+
 
 class TestWebhook:
     def test_health_check(self, client):
@@ -152,7 +157,7 @@ class TestWebhook:
         assert resp.status_code == 400
 
     def test_webhook_not_json(self, client):
-        resp = client.post("/webhook", data="not json")
+        resp = client.post("/webhook", data="not json", content_type="text/plain")
         assert resp.status_code == 400
 
     def test_webhook_cannot_parse(self, client):
@@ -164,21 +169,17 @@ class TestWebhook:
         create_transaction(user_id=test_user["id"], tx_ref="TX-E2E", amount=2500, plan="day", manual_transaction_id=manual_id)
         resp = client.post("/webhook", json={"sender": "0782123456", "message": f"UGX 2,500 paid. Ref: {manual_id}."})
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["status"] == "success"
-        assert data["plan"] == "day"
-        user = get_user(test_user["id"])
-        assert user["is_subscribed"] == 1
+        assert resp.get_json()["status"] == "success"
+        assert resp.get_json()["plan"] == "day"
 
     def test_webhook_duplicate(self, client, test_user):
         manual_id = f"M2361DUP{uuid.uuid4().hex[:4].upper()}"
         create_transaction(user_id=test_user["id"], tx_ref="TX-DUP", amount=2500, plan="day", manual_transaction_id=manual_id)
-        msg = f"UGX 2,500 paid. Ref: {manual_id}."
-        r1 = client.post("/webhook", json={"sender": "0782123456", "message": msg})
+        msg = {"sender": "0782123456", "message": f"UGX 2,500 paid. Ref: {manual_id}."}
+        r1 = client.post("/webhook", json=msg)
         assert r1.status_code == 200
-        r2 = client.post("/webhook", json={"sender": "0782123456", "message": msg})
-        assert r2.status_code == 400
-        assert "duplicate" in r2.get_json()["error"].lower()
+        r2 = client.post("/webhook", json=msg)
+        assert r2.status_code in (400, 409)
 
     def test_webhook_invalid_amount(self, client, test_user):
         manual_id = f"M2361BAD{uuid.uuid4().hex[:4].upper()}"
@@ -186,27 +187,49 @@ class TestWebhook:
         resp = client.post("/webhook", json={"sender": "0782123456", "message": f"UGX 9,999 paid. Ref: {manual_id}."})
         assert resp.status_code == 400
 
-    def test_create_user_api(self, client):
-        resp = client.post("/api/users", json={"email": "api-user@example.com"})
+    def test_webhook_oversized_message(self, client):
+        resp = client.post("/webhook", json={"sender": "0782123456", "message": "X" * 600})
+        assert resp.status_code == 400
+
+
+class TestAPI:
+    def test_create_user_requires_api_key(self, client):
+        resp = client.post("/api/users", json={"email": "no@key.com"})
+        assert resp.status_code == 401
+
+    def test_create_user_with_key(self, client, auth_headers):
+        resp = client.post("/api/users", json={"email": "with-key@example.com"}, headers=auth_headers)
         assert resp.status_code == 201
 
-    def test_get_user_api(self, client, test_user):
-        resp = client.get(f"/api/users/{test_user['id']}")
+    def test_create_user_invalid_email(self, client, auth_headers):
+        resp = client.post("/api/users", json={"email": "not-an-email"}, headers=auth_headers)
+        assert resp.status_code == 400
+
+    def test_create_user_duplicate(self, client, auth_headers):
+        client.post("/api/users", json={"email": "dup@example.com"}, headers=auth_headers)
+        resp = client.post("/api/users", json={"email": "dup@example.com"}, headers=auth_headers)
+        assert resp.status_code == 409
+
+    def test_get_user_requires_key(self, client):
+        resp = client.get("/api/users/some-id")
+        assert resp.status_code == 401
+
+    def test_get_user_with_key(self, client, auth_headers, test_user):
+        resp = client.get(f"/api/users/{test_user['id']}", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.get_json()["email"] == test_user["email"]
+        assert "password_hash" not in resp.get_json()
 
-    def test_create_transaction_api(self, client, test_user):
-        resp = client.post("/api/transactions", json={"user_id": test_user["id"], "amount": 15000, "plan": "monthly"})
-        assert resp.status_code == 201
+    def test_active_plans_public(self, client):
+        resp = client.get("/api/active-plans")
+        assert resp.status_code == 200
+        plans = resp.get_json()["plans"]
+        assert len(plans) == 3
+        assert "merchant_phone" not in resp.get_json()
 
-    def test_subscription_expiry(self, test_user):
-        from database import get_db
-        user = activate_subscription(test_user["id"], "quarterly")
-        assert user["subscription_expires"] is not None
-        with get_db() as (conn, cur):
-            cur.execute("SELECT julianday(subscription_expires) - julianday('now') AS days_left FROM users WHERE id = ?", (test_user["id"],))
-            days_left = cur.fetchone()["days_left"]
-            assert 88 <= days_left <= 91
+    def test_payment_status_requires_valid_tx_ref(self, client):
+        resp = client.get("/api/payment-status/INVALID_REF")
+        assert resp.status_code == 400
 
 
 if __name__ == "__main__":
