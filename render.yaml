@@ -19,9 +19,9 @@ services:
       - key: APP_ENV
         value: production
       - key: MERCHANT_PHONE
-        sync: false
+        value: "0770123456"
       - key: MERCHANT_NAME
-        sync: false
+        value: "SMS Payment Service"
       - key: WEBHOOK_RATE_LIMIT
         value: 30 per minute
       - key: GLOBAL_RATE_LIMIT
