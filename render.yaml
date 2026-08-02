@@ -1,4 +1,4 @@
-# Render deployment config
+# Render deployment config for SMS Payment Verification System
 # https://render.com/docs/web-services
 
 services:
@@ -10,22 +10,31 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 30
     envVars:
+      # ----- REQUIRED: Must be set manually (Render's generateValue didn't work) -----
       - key: SECRET_KEY
-        generateValue: true
+        value: "thisisasecretkeywithatleast32characters"
       - key: API_KEY
-        generateValue: true
-      - key: WEBHOOK_SECRET
-        generateValue: true
-      - key: APP_ENV
-        value: production
+        value: "apikey123456789012345678901234"
       - key: MERCHANT_PHONE
         value: "0756408723"
+
+      # ----- OPTIONAL: Customize these if needed -----
       - key: MERCHANT_NAME
-        value: "nakyanzi daisy"
+        value: "Nakyanzi Daisy"
+      - key: APP_ENV
+        value: production
+
+      # ----- RATE LIMITS -----
       - key: WEBHOOK_RATE_LIMIT
         value: 30 per minute
       - key: GLOBAL_RATE_LIMIT
         value: 60 per minute
+
+      # ----- WEBHOOK SECURITY (optional) -----
+      - key: WEBHOOK_SECRET
+        value: "webhooksecretwithatleast32characters"
+
+      # ----- TELEGRAM (set these manually in Render dashboard) -----
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
