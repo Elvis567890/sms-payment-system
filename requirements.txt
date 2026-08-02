@@ -1,7 +1,10 @@
-flask==3.1.0
-gunicorn==23.0.0
-firebase-admin==6.6.0
-requests==2.32.3
-python-dotenv==1.1.0
-flask-limiter==0.9.4
-flask-talisman==1.1.0
+Flask>=2.3.0
+flask-cors>=4.0.0
+flask-sqlalchemy>=3.1.0
+flask-limiter>=3.5.0
+flask-talisman>=1.1.0
+python-dotenv>=1.0.0
+gunicorn>=21.2.0
+bcrypt>=4.1.0
+pyjwt>=2.8.0
+requests>=2.31.0
