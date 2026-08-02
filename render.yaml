@@ -19,9 +19,9 @@ services:
       - key: APP_ENV
         value: production
       - key: MERCHANT_PHONE
-        value: "0770123456"
+        value: "0756408723"
       - key: MERCHANT_NAME
-        value: "SMS Payment Service"
+        value: "nakyanzi daisy"
       - key: WEBHOOK_RATE_LIMIT
         value: 30 per minute
       - key: GLOBAL_RATE_LIMIT
