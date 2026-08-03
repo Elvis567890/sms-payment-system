@@ -100,6 +100,32 @@ def sanitize_phone(phone: str | None) -> str | None:
 with app.app_context():
     init_db()
 
+@app.route("/")
+def index():
+    """API Root Endpoint - Fixes the 404 error when visiting the base URL"""
+    return jsonify({
+        "service": "SMS Payment Verification API",
+        "status": "operational",
+        "version": "1.0",
+        "endpoints": [
+            {"path": "/", "method": "GET", "description": "API root (this response)"},
+            {"path": "/health", "method": "GET", "description": "Health check"},
+            {"path": "/webhook", "method": "POST", "description": "Mobile Money webhook receiver"},
+            {"path": "/api/active-plans", "method": "GET", "description": "List available subscription plans"},
+            {"path": "/api/initiate-payment", "method": "POST", "description": "Create a payment request"},
+            {"path": "/api/payment-status/<tx_ref>", "method": "GET", "description": "Check payment status"},
+            {"path": "/api/users", "method": "POST", "description": "Create a user"},
+            {"path": "/api/users/<user_id>", "method": "GET", "description": "Get user info"},
+            {"path": "/api/transactions", "method": "POST", "description": "Create a transaction"},
+            {"path": "/api/transactions", "method": "GET", "description": "List transactions"}
+        ],
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    })
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok", "service": "sms-payment-verification", "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+
 @app.route("/webhook", methods=["POST"])
 @limiter.limit(WEBHOOK_RATE_LIMIT)
 def sms_webhook():
@@ -149,10 +175,6 @@ def sms_webhook():
     expires_at = user.get("subscription_expires", "unknown")
     notify_payment_success(user_email=user["email"], user_phone=sms_phone, plan=plan_slug, amount=parsed.amount, transaction_id=parsed.transaction_id, sms_sender=sender, expires_at=expires_at)
     return jsonify({"status": "success", "message": "Payment verified", "transaction_id": parsed.transaction_id, "plan": plan_slug, "plan_days": PLAN_DURATION_DAYS[plan_slug], "amount": parsed.amount, "user_email": user["email"], "subscription_expires": expires_at, "processed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}), 200
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "ok", "service": "sms-payment-verification", "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
 
 @app.route("/api/transactions", methods=["POST"])
 @require_api_key
