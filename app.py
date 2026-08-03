@@ -5,7 +5,7 @@ SMS Payment Verification System — Flask Webhook Server
    Talisman headers, input validation, API-key gating.
 """
 
-import os, uuid, hmac, hashlib, time
+import os, uuid, hmac, hashlib, time, json
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -131,49 +131,82 @@ def health_check():
 def sms_webhook():
     if not verify_webhook_signature():
         return jsonify({"error": "invalid webhook signature"}), 403
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 400
-    data = request.get_json(silent=True)
-    if data is None:
-        return jsonify({"error": "invalid JSON body"}), 400
+    
+    # === DATA EXTRACTION FIX ===
+    # Handle JSON, Form Data, URL Params, or Raw Text universally
+    data = None
+    if request.is_json:
+        data = request.get_json(silent=True)
+    
+    if not data:
+        data = request.form.to_dict()
+    
+    if not data or not data.get("message"):
+        data = request.args.to_dict()
+    
+    # Last resort: check raw body (e.g., if Content-Type is text/plain or missing)
+    if (not data or not data.get("message")) and request.data:
+        raw_body = request.get_data(as_text=True)
+        try:
+            data = json.loads(raw_body)
+        except json.JSONDecodeError:
+            # If it's not JSON, assume the entire text is the "message" field
+            data = {"message": raw_body}
+            
+    if not data:
+        return jsonify({"error": "invalid request body"}), 400
+    # ==========================
+
     sender_raw = (data.get("sender") or "").strip()
     message_raw = (data.get("message") or "").strip()
+    
     if not message_raw:
         return jsonify({"error": "missing 'message' field"}), 400
     if len(message_raw) > MAX_SMS_LENGTH:
         return jsonify({"error": f"message exceeds {MAX_SMS_LENGTH} chars"}), 400
+    
     sender = sanitize_phone(sender_raw)
     message = message_raw
+    
     parsed = parse_sms(message)
     app.logger.info(f"[webhook] tx_id={parsed.transaction_id} amount={parsed.amount}")
+    
     if not parsed.transaction_id:
         return jsonify({"error": "could not extract transaction ID", "details": parsed.errors}), 400
     if parsed.amount is None:
         return jsonify({"error": "could not extract amount", "details": parsed.errors}), 400
+    
     if is_manual_id_used(parsed.transaction_id):
         app.logger.warning(f"[security] duplicate: {parsed.transaction_id}")
         return jsonify({"error": "duplicate transaction", "transaction_id": parsed.transaction_id}), 409
+    
     failed_count = count_recent_failed_webhooks(sender or "unknown", 5)
     if failed_count > 20:
         app.logger.warning(f"[security] {failed_count} failed webhooks from {sender}")
         return jsonify({"error": "too many failed attempts"}), 429
+    
     pending = get_pending_by_manual_id(parsed.transaction_id)
     if pending is None:
         pending_by_amount = [tx for tx in get_recent_pending(50) if abs(tx["amount"] - parsed.amount) < 0.01]
         if not pending_by_amount:
             return jsonify({"error": "no matching pending transaction", "transaction_id": parsed.transaction_id, "amount": parsed.amount}), 404
         pending = pending_by_amount[0]
+    
     plan_slug = plan_from_amount(parsed.amount)
     if plan_slug is None:
         valid_prices = ", ".join(f"UGX {p:,}" for p in PLAN_PRICES.values())
         return jsonify({"error": f"amount UGX {parsed.amount:,.0f} doesn't match any plan", "valid_prices": valid_prices}), 400
+    
     if pending["plan"] != plan_slug:
         app.logger.warning(f"[webhook] plan mismatch: tx={pending['plan']} sms={plan_slug}")
+    
     sms_phone = parsed.sender_phone or sender
     mark_transaction_success(tx_id=pending["id"], manual_transaction_id=parsed.transaction_id, phone=sms_phone, sms_raw=message)
     user = activate_subscription(pending["user_id"], plan_slug)
     expires_at = user.get("subscription_expires", "unknown")
+    
     notify_payment_success(user_email=user["email"], user_phone=sms_phone, plan=plan_slug, amount=parsed.amount, transaction_id=parsed.transaction_id, sms_sender=sender, expires_at=expires_at)
+    
     return jsonify({"status": "success", "message": "Payment verified", "transaction_id": parsed.transaction_id, "plan": plan_slug, "plan_days": PLAN_DURATION_DAYS[plan_slug], "amount": parsed.amount, "user_email": user["email"], "subscription_expires": expires_at, "processed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}), 200
 
 @app.route("/api/transactions", methods=["POST"])
