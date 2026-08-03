@@ -132,32 +132,52 @@ def sms_webhook():
     if not verify_webhook_signature():
         return jsonify({"error": "invalid webhook signature"}), 403
     
-    # === DATA EXTRACTION FIX ===
+    # === ULTIMATE DATA EXTRACTION FIX ===
     data = None
     if request.is_json:
         data = request.get_json(silent=True)
     if not data:
         data = request.form.to_dict()
-    if not data or not data.get("message"):
-        data = request.args.to_dict()
-    if (not data or not data.get("message")) and request.data:
-        raw_body = request.get_data(as_text=True)
-        try:
-            data = json.loads(raw_body)
-        except json.JSONDecodeError:
-            data = {"message": raw_body}
-            
-    # NEW: Return error with the raw data so it shows up in your phone app!
     if not data:
-        return jsonify({"error": "invalid request body", "received_raw": request.get_data(as_text=True)}), 400
+        data = request.args.to_dict()
+
+    # Extreme Message Scraper
+    message_raw = None
+    if data:
+        possible_keys = ['message', 'text', 'body', 'sms', 'content', '%sms%', 'msg']
+        for key in possible_keys:
+            val = data.get(key)
+            if val and isinstance(val, str):
+                message_raw = val.strip()
+                break
     
-    sender_raw = (data.get("sender") or "").strip()
-    message_raw = (data.get("message") or "").strip()
-    
-    # NEW: If message is missing, show what keys the app sent!
+    # If still no message, fallback to raw body
     if not message_raw:
-        return jsonify({"error": "missing 'message' field", "received_data": data}), 400
-    # ==========================
+        raw_body = request.get_data(as_text=True)
+        if raw_body:
+            try:
+                # Check if raw_body is actually hidden JSON (some apps double-encode)
+                json_data = json.loads(raw_body)
+                for key in possible_keys:
+                    val = json_data.get(key)
+                    if val and isinstance(val, str):
+                        message_raw = val.strip()
+                        break
+            except:
+                pass
+            
+            # Final resort: the entire raw body is the SMS message
+            if not message_raw:
+                message_raw = raw_body.strip()
+                
+    if not message_raw:
+        return jsonify({"error": "Could not extract SMS text from the request body"}), 400
+
+    # Extreme Sender Scraper
+    sender_raw = ""
+    if data:
+        sender_raw = data.get('sender') or data.get('phone') or data.get('number') or data.get('from') or ""
+    # =====================================
 
     if len(message_raw) > MAX_SMS_LENGTH:
         return jsonify({"error": f"message exceeds {MAX_SMS_LENGTH} chars"}), 400
