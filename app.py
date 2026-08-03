@@ -133,35 +133,32 @@ def sms_webhook():
         return jsonify({"error": "invalid webhook signature"}), 403
     
     # === DATA EXTRACTION FIX ===
-    # Handle JSON, Form Data, URL Params, or Raw Text universally
     data = None
     if request.is_json:
         data = request.get_json(silent=True)
-    
     if not data:
         data = request.form.to_dict()
-    
     if not data or not data.get("message"):
         data = request.args.to_dict()
-    
-    # Last resort: check raw body (e.g., if Content-Type is text/plain or missing)
     if (not data or not data.get("message")) and request.data:
         raw_body = request.get_data(as_text=True)
         try:
             data = json.loads(raw_body)
         except json.JSONDecodeError:
-            # If it's not JSON, assume the entire text is the "message" field
             data = {"message": raw_body}
             
+    # NEW: Return error with the raw data so it shows up in your phone app!
     if not data:
-        return jsonify({"error": "invalid request body"}), 400
-    # ==========================
-
+        return jsonify({"error": "invalid request body", "received_raw": request.get_data(as_text=True)}), 400
+    
     sender_raw = (data.get("sender") or "").strip()
     message_raw = (data.get("message") or "").strip()
     
+    # NEW: If message is missing, show what keys the app sent!
     if not message_raw:
-        return jsonify({"error": "missing 'message' field"}), 400
+        return jsonify({"error": "missing 'message' field", "received_data": data}), 400
+    # ==========================
+
     if len(message_raw) > MAX_SMS_LENGTH:
         return jsonify({"error": f"message exceeds {MAX_SMS_LENGTH} chars"}), 400
     
