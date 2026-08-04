@@ -132,7 +132,7 @@ def sms_webhook():
     if not verify_webhook_signature():
         return jsonify({"error": "invalid webhook signature"}), 403
     
-    # === ULTIMATE DATA EXTRACTION FIX ===
+    # === ULTIMATE DATA EXTRACTION ===
     data = None
     if request.is_json:
         data = request.get_json(silent=True)
@@ -141,7 +141,6 @@ def sms_webhook():
     if not data:
         data = request.args.to_dict()
 
-    # Extreme Message Scraper
     message_raw = None
     if data:
         possible_keys = ['message', 'text', 'body', 'sms', 'content', '%sms%', 'msg']
@@ -151,12 +150,10 @@ def sms_webhook():
                 message_raw = val.strip()
                 break
     
-    # If still no message, fallback to raw body
     if not message_raw:
         raw_body = request.get_data(as_text=True)
         if raw_body:
             try:
-                # Check if raw_body is actually hidden JSON (some apps double-encode)
                 json_data = json.loads(raw_body)
                 for key in possible_keys:
                     val = json_data.get(key)
@@ -165,22 +162,25 @@ def sms_webhook():
                         break
             except:
                 pass
-            
-            # Final resort: the entire raw body is the SMS message
             if not message_raw:
                 message_raw = raw_body.strip()
-                
+
+    # ============================================
+    # 🔥 DEBUG: LOG WHAT THE SERVER RECEIVED 🔥
+    app.logger.error(f"============== DEBUG ==============")
+    app.logger.error(f"Received message_raw: '{message_raw}'")
+    app.logger.error(f"===================================")
+    # ============================================
+
     if not message_raw:
         return jsonify({"error": "Could not extract SMS text from the request body"}), 400
 
-    # Extreme Sender Scraper
+    if len(message_raw) > MAX_SMS_LENGTH:
+        return jsonify({"error": f"message exceeds {MAX_SMS_LENGTH} chars"}), 400
+
     sender_raw = ""
     if data:
         sender_raw = data.get('sender') or data.get('phone') or data.get('number') or data.get('from') or ""
-    # =====================================
-
-    if len(message_raw) > MAX_SMS_LENGTH:
-        return jsonify({"error": f"message exceeds {MAX_SMS_LENGTH} chars"}), 400
     
     sender = sanitize_phone(sender_raw)
     message = message_raw
